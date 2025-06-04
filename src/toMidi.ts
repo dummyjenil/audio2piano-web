@@ -2,6 +2,23 @@ import { Midi } from '@tonejs/midi';
 
 type Optional<T> = T | null;
 
+export type detectionOptions = {
+  onsetThresh?: number;
+  frameThresh?: number;
+  minNoteLen?: number;
+  maxFreq?: number | null;
+  minFreq?: number | null;
+  energyTolerance?: number;
+  melodiaTrick?: boolean;
+  inferOnsets?: boolean;
+};
+
+type prediction = {
+  frames: number[][];
+  onsets: number[][];
+  contours: number[][];
+};
+
 type NoteEvent = {
   startFrame: number;
   durationFrames: number;
@@ -321,21 +338,13 @@ function getInferredOnsets(
  * @param minFreq: minimum allowed output frequency, in Hz
  * @param melodiaTrick: remove semitones near a peak
  * @param energyTolerance: number of frames allowed to drop below 0
+ * @param progress_callback: a callback on progress 
  * @returns List of tuples[(startTimeSeconds, durationSeconds, pitchMidi, amplitude)]
                 where amplitude is a number between 0 and 1
  */
-function outputToNotesPoly(
-  frames: number[][],
-  onsets: number[][],
-  onsetThresh: number = 0.5,
-  frameThresh: number = 0.3,
-  minNoteLen: number = 5,
-  inferOnsets: boolean = true,
-  maxFreq: Optional<number> = null,
-  minFreq: Optional<number> = null,
-  melodiaTrick: boolean = true,
-  energyTolerance: number = 11,
-): NoteEvent[] {
+async function outputToNotesPoly(
+  frames: number[][], onsets: number[][], onsetThresh: number = 0.5, frameThresh: number = 0.3, minNoteLen: number = 5, inferOnsets: boolean = true, maxFreq: Optional<number> = null, minFreq: Optional<number> = null, melodiaTrick: boolean = true, energyTolerance: number = 11, progress_callback: (percent: number) => void,
+): Promise<NoteEvent[]> {
   let inferredFrameThresh = frameThresh;
   if (inferredFrameThresh === null) {
     // calculate mean and std deviation of a flattened frames
@@ -424,9 +433,16 @@ function outputToNotesPoly(
     .filter(isNotNull);
 
   if (melodiaTrick === true) {
+    let lastPercent = -1;
+
+    const totalEnergyPoints = remainingEnergy.reduce(
+      (sum, row) => sum + row.filter(val => val > inferredFrameThresh).length,
+      0,
+    );
+    let processedPoints = 0;
+
     while (globalMax(remainingEnergy) > inferredFrameThresh) {
-      // i_mid, freq_idx = np.unravel_index(np.argmax(remaining_energy), energy_shape)
-      // We want the (row, column) with the largest value in remainingEnergy
+      // Find the (row, column) with the largest value in remainingEnergy
       const [iMid, freqIdx] = remainingEnergy.reduce(
         (prevCoord, currRow, rowIdx) => {
           const colMaxIdx = argMax(currRow)!;
@@ -437,8 +453,11 @@ function outputToNotesPoly(
         },
         [0, 0],
       );
+
+      if (remainingEnergy[iMid][freqIdx] > inferredFrameThresh) processedPoints++;
       remainingEnergy[iMid][freqIdx] = 0;
-      // forward pass
+
+      // Forward pass
       let i = iMid + 1;
       let k = 0;
       while (i < nFrames - 1 && k < energyTolerance) {
@@ -448,11 +467,15 @@ function outputToNotesPoly(
           k = 0;
         }
 
+        if (remainingEnergy[i][freqIdx] > inferredFrameThresh) processedPoints++;
         remainingEnergy[i][freqIdx] = 0;
+
         if (freqIdx < MAX_FREQ_IDX) {
+          if (remainingEnergy[i][freqIdx + 1] > inferredFrameThresh) processedPoints++;
           remainingEnergy[i][freqIdx + 1] = 0;
         }
         if (freqIdx > 0) {
+          if (remainingEnergy[i][freqIdx - 1] > inferredFrameThresh) processedPoints++;
           remainingEnergy[i][freqIdx - 1] = 0;
         }
 
@@ -460,7 +483,7 @@ function outputToNotesPoly(
       }
       const iEnd = i - 1 - k;
 
-      // backwards pass
+      // Backward pass
       i = iMid - 1;
       k = 0;
       while (i > 0 && k < energyTolerance) {
@@ -470,45 +493,55 @@ function outputToNotesPoly(
           k = 0;
         }
 
+        if (remainingEnergy[i][freqIdx] > inferredFrameThresh) processedPoints++;
         remainingEnergy[i][freqIdx] = 0;
+
         if (freqIdx < MAX_FREQ_IDX) {
+          if (remainingEnergy[i][freqIdx + 1] > inferredFrameThresh) processedPoints++;
           remainingEnergy[i][freqIdx + 1] = 0;
         }
         if (freqIdx > 0) {
+          if (remainingEnergy[i][freqIdx - 1] > inferredFrameThresh) processedPoints++;
           remainingEnergy[i][freqIdx - 1] = 0;
         }
 
         i -= 1;
       }
       const iStart = i + 1 + k;
+
       if (iStart < 0) {
         throw new Error(`iStart is not positive! value: ${iStart}`);
       }
 
       if (iEnd >= nFrames) {
-        throw new Error(
-          `iEnd is past end of times. (iEnd, times.length): (${iEnd}, ${nFrames})`,
-        );
+        throw new Error(`iEnd is past end of times. (iEnd, times.length): (${iEnd}, ${nFrames})`);
       }
 
-      // amplitude = np.mean(frames[i_start:i_end, freq_idx])
+      // Calculate amplitude
       const amplitude =
         frames.slice(iStart, iEnd).reduce((sum, row) => sum + row[freqIdx], 0) /
         (iEnd - iStart);
 
       if (iEnd - iStart <= minNoteLen) {
-        // note is too short or too quiet, skip it and remove the energy
+        // Note is too short or too quiet, skip it
         continue;
       }
 
-      // add the note
+      // Add the note
       noteEvents.push({
         startFrame: iStart,
         durationFrames: iEnd - iStart,
         pitchMidi: freqIdx + MIDI_OFFSET,
         amplitude: amplitude,
       });
+      const percent = Math.floor((processedPoints / totalEnergyPoints) * 100);
+      if (percent !== lastPercent) {
+        progress_callback(percent);
+        lastPercent = percent;
+        await new Promise(r => setTimeout(r, 0)); // yield for UI
+      }
     }
+
   }
 
   return noteEvents;
@@ -609,37 +642,77 @@ const noteFramesToTime = (notes: NoteEvent[]): NoteEventTime[] =>
 
 // Define the options for audio detection
 
-type detectionOptions = {
-  onsetThresh?: number;
-  frameThresh?: number;
-  minNoteLen?: number;
-  inferOnsets?: boolean;
-  maxFreq?: number | null;
-  minFreq?: number | null;
-  melodiaTrick?: boolean;
-  energyTolerance?: number;
-};
 
-type prediction = {
-  frames: number[][];
-  onsets: number[][];
-  contours: number[][];
-};
-
-export default function pred_to_midi(model_output: prediction, name: string, options?: detectionOptions) {
-  const { onsetThresh = 0.5, frameThresh = 0.3, minNoteLen = 127.70, inferOnsets = true, maxFreq = null, minFreq = null, melodiaTrick = true, energyTolerance = 11, } = options || {};
+export async function pred_to_midi(
+  model_output: prediction,
+  name: string,
+  progress_callback: (percent: number) => void,
+  options?: detectionOptions
+) {
+  const {
+    onsetThresh = 0.5,
+    frameThresh = 0.3,
+    minNoteLen = 127.70,
+    inferOnsets = true,
+    maxFreq = null,
+    minFreq = null,
+    melodiaTrick = true,
+    energyTolerance = 11,
+  } = options || {};
   const midi = new Midi();
-
-  const trackWithMelodia = midi.addTrack();
-  trackWithMelodia.name = name;
-  const notes = noteFramesToTime(addPitchBendsToNoteEvents(model_output.contours, outputToNotesPoly(model_output.frames, model_output.onsets, onsetThresh, frameThresh, Math.round((minNoteLen / 1000) * (AUDIO_SAMPLE_RATE / FFT_HOP)), inferOnsets, maxFreq, minFreq, melodiaTrick, energyTolerance)));
-  const noteEvents = notes.map((n) => ({ pitch: n.pitchMidi, duration: n.durationSeconds, onset: n.startTimeSeconds, pitchBends: n.pitchBends, velocity: n.amplitude }));
-  noteEvents.sort((a, b) => a.onset - b.onset || a.pitch - b.pitch);
-  noteEvents.forEach(note => {
-    trackWithMelodia.addNote({ midi: note.pitch, duration: note.duration, time: note.onset, velocity: note.velocity });
-    if (note.pitchBends) {
-      note.pitchBends.forEach((b, i) => trackWithMelodia.addPitchBend({ time: note.onset + (note.duration * i) / note.pitchBends!.length, value: b, }),);
+  const track = midi.addTrack();
+  track.name = name;
+  const rawNotes = await outputToNotesPoly(
+    model_output.frames,
+    model_output.onsets,
+    onsetThresh,
+    frameThresh,
+    Math.round((minNoteLen / 1000) * (AUDIO_SAMPLE_RATE / FFT_HOP)),
+    inferOnsets,
+    maxFreq,
+    minFreq,
+    melodiaTrick,
+    energyTolerance,
+    progress_callback
+  );
+  const timedNotes = noteFramesToTime(
+    addPitchBendsToNoteEvents(model_output.contours, rawNotes)
+  );
+  // ⚡ Minimize what you store and sort
+  const events = timedNotes.map(n => ({
+    pitch: n.pitchMidi,
+    duration: n.durationSeconds,
+    onset: n.startTimeSeconds,
+    velocity: n.amplitude,
+    bends: n.pitchBends ?? null,
+  }));
+  // ✅ Must sort: stable and precise
+  events.sort((a, b) => a.onset - b.onset || a.pitch - b.pitch);
+  const total = events.length;
+  let lastPercent = -1;
+  for (let i = 0; i < total; i++) {
+    const n = events[i];
+    track.addNote({
+      midi: n.pitch,
+      duration: n.duration,
+      time: n.onset,
+      velocity: n.velocity,
+    });
+    if (n.bends) {
+      const len = n.bends.length;
+      for (let j = 0; j < len; j++) {
+        track.addPitchBend({
+          time: n.onset + (n.duration * j) / len,
+          value: n.bends[j],
+        });
+      }
     }
-  });
+    const percent = Math.floor((i / total) * 100);
+    if (percent !== lastPercent) {
+      progress_callback(percent);
+      lastPercent = percent;
+      await new Promise(r => setTimeout(r, 0)); // yield for UI
+    }
+  }
   return midi.toArray();
 }

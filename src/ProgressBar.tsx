@@ -6,14 +6,17 @@ type ProgressBarProps = {
 };
 
 const ProgressBar: React.FC<ProgressBarProps> = ({ progress }) => {
-  const clampProgress = Math.min(100, Math.max(0, progress));
+  const clampProgress = Math.floor(progress);
 
   return (
-    <div className="progress-bar-container">
-      <div
-        className="progress-bar-fill"
-        style={{ width: `${clampProgress}%` }}
-      />
+    <div>
+      <div className="progress-bar-container">
+        <div
+          className="progress-bar-fill"
+          style={{ width: `${clampProgress}%` }}
+        />
+      </div>
+      {progress > 0 && progress < 100 && <p>Processing: {progress.toFixed(0)}%</p>}
     </div>
   );
 };

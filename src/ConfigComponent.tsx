@@ -40,12 +40,16 @@ const ConfigComponent: React.FC<Props> = ({ initialConfig, onChange }) => {
                                 type="checkbox"
                                 checked={value}
                                 onChange={(e) => handleChange(key as keyof detectionOptions, e.target.checked)}
+                                id={`${key}-id`}
+                                name={`${key}-name`}
                             />
                         ) : (
                             <input
                                 type="number"
                                 value={value ?? ''}
                                 onChange={(e) => handleChange(key as keyof detectionOptions, e.target.value)}
+                                id={`${key}-id`}
+                                name={`${key}-name`}
                             />
                         )}
                     </label>

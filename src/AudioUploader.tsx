@@ -60,7 +60,7 @@ const AudioUploader: React.FC<AudioUploaderProps> = ({ onAudioReceived }) => {
   return (
     <div>
       <h3>Upload or Record Audio</h3>
-      <input type="file" accept="audio/*" onChange={handleFileChange} />
+      <input type="file" accept="audio/*" onChange={handleFileChange} id='audio-uploader-id' name='audio-uploader-name'/>
       <div style={{ marginTop: '10px' }}>
         {!isRecording ? (
           <button onClick={startRecording}>🎙️ Start Recording</button>

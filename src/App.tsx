@@ -30,7 +30,7 @@ const App: React.FC = () => {
     inferOnsets: true,
     maxFreq: null,
     minFreq: null,
-    melodiaTrick: true,
+    melodiaTrick: false,
     energyTolerance: 11,
   }
   function uuidToNumber() {
